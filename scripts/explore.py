@@ -5,6 +5,7 @@
   python scripts/explore.py --free     # fly around yourself, no physics
   python scripts/explore.py --record out/explore.mp4               # also save the dashboard as a video
   python scripts/explore.py --no-window --record out/explore.mp4   # record only, no window
+  python scripts/explore.py --scale 0.8                            # window size (default: fit screen)
 
 Panels: 1 outside  2 eye  3 birds-eye  4 saturation  5 segmentation  6 candidates
         7 map  8 glide analysis  9 timeline
@@ -33,7 +34,7 @@ from glider_sim.camera import OmniCamera  # noqa: E402
 from glider_sim.rotations import rot_from_euler  # noqa: E402
 from glider_sim.sensors import NavEstimate  # noqa: E402
 from glider_sim.sim import Simulation, load_config  # noqa: E402
-from glider_sim.viewer import Explorer, sim_pose  # noqa: E402
+from glider_sim.viewer import CANVAS_H, CANVAS_W, Explorer, sim_pose  # noqa: E402
 from glider_sim.vision import RunwayDetector  # noqa: E402
 from glider_sim.world import Runway, World  # noqa: E402
 
@@ -57,19 +58,76 @@ class Recorder:
             self.w.release()
 
 
-def attach_mouse(ex):
-    def on_mouse(event, x, y, flags, param):
-        if event == cv2.EVENT_LBUTTONDOWN:
-            ex.handle_click(x, y)
-    cv2.setMouseCallback(WINDOW, on_mouse)
+def screen_size():
+    """Usable screen size in points (macOS Retina reports points, not pixels)."""
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        root.withdraw()
+        size = root.winfo_screenwidth(), root.winfo_screenheight()
+        root.destroy()
+        return size
+    except Exception:
+        return None
 
 
-def run_live(cfg, rec, window=True, render_scale=1.0, cv_preview=True):
+class Display:
+    """Shows dashboard images scaled to fit the screen; maps clicks back to dashboard pixels."""
+
+    def __init__(self, scale=None, enabled=True):
+        self.enabled = enabled
+        self.scale = 1.0
+        if not enabled:
+            return
+        if scale is None:
+            scr = screen_size()
+            if scr:  # leave room for the menu bar, title bar and dock
+                scale = min(1.0, (scr[0] - 40) / CANVAS_W, (scr[1] - 120) / CANVAS_H)
+        self.scale = float(scale or 1.0)
+        cv2.namedWindow(WINDOW, cv2.WINDOW_AUTOSIZE)
+        self.loading("starting ...")
+        cv2.moveWindow(WINDOW, 10, 30)
+        try:  # bring the window in front of the terminal / editor once
+            cv2.setWindowProperty(WINDOW, cv2.WND_PROP_TOPMOST, 1)
+            cv2.waitKey(1)
+            cv2.setWindowProperty(WINDOW, cv2.WND_PROP_TOPMOST, 0)
+        except cv2.error:
+            pass
+
+    def show(self, img):
+        if self.scale != 1.0:
+            img = cv2.resize(img, (int(img.shape[1] * self.scale), int(img.shape[0] * self.scale)),
+                             interpolation=cv2.INTER_AREA)
+        cv2.imshow(WINDOW, img)
+
+    def loading(self, msg):
+        print(msg, flush=True)
+        if not self.enabled:
+            return
+        img = np.full((CANVAS_H, CANVAS_W, 3), 24, np.uint8)
+        cv2.putText(img, "Glider environment", (60, 380), cv2.FONT_HERSHEY_SIMPLEX, 1.6, (235, 235, 235), 2,
+                    cv2.LINE_AA)
+        cv2.putText(img, msg, (60, 440), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (170, 170, 170), 1, cv2.LINE_AA)
+        self.show(img)
+        cv2.waitKey(30)  # let the window actually draw before the next slow step
+
+    def attach_mouse(self, ex):
+        def on_mouse(event, x, y, flags, param):
+            if event == cv2.EVENT_LBUTTONDOWN:
+                ex.handle_click(int(x / self.scale), int(y / self.scale))
+        cv2.setMouseCallback(WINDOW, on_mouse)
+
+
+def run_live(cfg, rec, disp, render_scale=1.0, cv_preview=True):
+    window = disp.enabled
+    disp.loading("generating terrain, runway and cameras (a few seconds) ...")
     sim = Simulation(cfg, frame_callback=lambda *a: None)  # callback forces camera rendering
+    disp.loading("building dashboard ...")
     ex = Explorer(sim.world, sim.params, sim.cam, sim.runway, cfg["environment"].get("seed", 0), render_scale,
                   cfg["guidance"]["airspeed_mps"])
     if window:
-        attach_mouse(ex)
+        disp.attach_mouse(ex)
+        disp.loading("starting flight ...")
     # Frame pacing: show frames at a steady interval (the slowest recent frame time)
     # instead of as-soon-as-ready, which looks jerky when per-frame cost varies.
     state = {"paused": False, "last": time.perf_counter(), "interval": 0.0, "cv": cv_preview}
@@ -103,7 +161,7 @@ def run_live(cfg, rec, window=True, render_scale=1.0, cv_preview=True):
                 if state["interval"] - busy > 0:
                     time.sleep(state["interval"] - busy)
                 state["last"] = time.perf_counter()
-            cv2.imshow(WINDOW, img)
+            disp.show(img)
             if not state["paused"]:
                 rec.write(img)
             key = cv2.waitKey(1 if not state["paused"] else 50) & 0xFF
@@ -124,16 +182,16 @@ def run_live(cfg, rec, window=True, render_scale=1.0, cv_preview=True):
         cv2.waitKey(0)
 
 
-def run_free(cfg, rec):
+def run_free(cfg, rec, disp):
     r = cfg["runway"]
     rwy = Runway(r["center_ne_m"], r["heading_deg"], r["length_m"], r["width_m"])
     seed = cfg["environment"].get("seed", 0)
-    print("generating world ...")
+    disp.loading("generating terrain and runway (a few seconds) ...")
     world = World(rwy, seed=seed)
     cam = OmniCamera(cfg["camera"])
     ex = Explorer(world, AircraftParams.from_config(cfg["aircraft"]), cam, rwy, seed,
                   airspeed=cfg["guidance"]["airspeed_mps"])
-    attach_mouse(ex)
+    disp.attach_mouse(ex)
     detector = RunwayDetector(cam)
     cv_on = True
 
@@ -153,7 +211,7 @@ def run_free(cfg, rec):
                      f"  pitch {np.degrees(euler[1]):5.1f}  roll {np.degrees(euler[0]):5.1f}",
                      "w/s move  a/d yaw  r/f up/down  i/k pitch  j/l roll  (shift = 5x)"]
         img = ex.compose(st)
-        cv2.imshow(WINDOW, img)
+        disp.show(img)
         rec.write(img)
         key = cv2.waitKey(0) & 0xFF
         if key in (ord("q"), 27):
@@ -194,6 +252,8 @@ def main():
     ap.add_argument("--oracle", action="store_true", help="live mode: guidance uses truth-based perception")
     ap.add_argument("--record", default=None, help="save the dashboard to this .mp4")
     ap.add_argument("--no-window", action="store_true", help="live mode: just record (needs --record)")
+    ap.add_argument("--scale", type=float, default=None,
+                    help="window scale, e.g. 0.8 (default: fit the screen)")
     ap.add_argument("--fast", action="store_true",
                     help="smoother: half-res outside view, truth-based perception, CV panels off (press c)")
     args = ap.parse_args()
@@ -202,15 +262,13 @@ def main():
     if args.fast:
         overrides["camera.rate_hz"] = 10.0  # more frames per simulated second -> ~real-time motion
     cfg = load_config(args.config, overrides)
-    if not args.no_window:
-        cv2.namedWindow(WINDOW, cv2.WINDOW_AUTOSIZE)
+    disp = Display(args.scale, enabled=args.free or not args.no_window)
     rec = Recorder(args.record, cfg["camera"]["rate_hz"] if not args.free else 10)
     try:
         if args.free:
-            run_free(cfg, rec)
+            run_free(cfg, rec, disp)
         else:
-            run_live(cfg, rec, window=not args.no_window, render_scale=0.5 if args.fast else 1.0,
-                     cv_preview=not args.fast)
+            run_live(cfg, rec, disp, render_scale=0.5 if args.fast else 1.0, cv_preview=not args.fast)
     finally:
         rec.close()
         cv2.destroyAllWindows()
