@@ -1,0 +1,145 @@
+# =============================================================================
+# Glider + mission configuration
+# -----------------------------------------------------------------------------
+# PLACEHOLDER SPECS: a generic ~2 m span, 2 kg glider. Replace the
+# `aircraft` block with the real drogue-glider numbers when available.
+#
+# Conventions
+#   World frame : NED (x North, y East, z Down), flat Earth, origin = runway centre
+#   Body frame  : FRD (x forward, y right wing, z down)
+#   Angles in config are DEGREES unless the key ends in _rad.
+#   Aero derivatives are non-dimensional, per RADIAN (standard notation).
+#   Surface sign convention:
+#     elevator +  = trailing edge DOWN  (nose-down moment, Cm_de < 0)
+#     aileron  +  = right roll          (Cl_da > 0)
+#     rudder   +  = trailing edge LEFT  (nose-left moment, Cn_dr < 0)
+#     flap     +  = down (more lift + more drag)
+# =============================================================================
+
+aircraft:
+  name: placeholder_2m_glider
+  mass_kg: 2.0
+  # Inertia about the CG in body axes [kg m^2]
+  Jx: 0.30
+  Jy: 0.10
+  Jz: 0.38
+  Jxz: 0.01
+
+  # Reference geometry
+  wing_area_m2: 0.40     # S
+  span_m: 2.0            # b
+  chord_m: 0.20          # mean aerodynamic chord, c
+  oswald_e: 0.85         # span efficiency (induced drag)
+  gear_height_m: 0.05    # CG height above the skid/belly at touchdown
+
+  aero:
+    # --- Longitudinal ---
+    CL0: 0.25
+    CL_alpha: 5.2
+    CL_q: 7.0
+    CL_de: 0.30
+    CL_df: 0.9           # flap lift increment per rad
+    CD0: 0.030           # parasite drag (induced drag computed from e and AR)
+    CD_df: 0.20          # flap drag increment per rad
+    CD_de: 0.0
+    Cm0: 0.02
+    Cm_alpha: -0.80
+    Cm_q: -12.0
+    Cm_de: -1.0
+    Cm_df: -0.10
+    # Stall model (Beard & McLain sigmoid blend to flat-plate)
+    alpha_stall_deg: 14.0
+    stall_blend_M: 50.0
+    # --- Lateral / directional ---
+    CY_beta: -0.30
+    CY_p: 0.0
+    CY_r: 0.15
+    CY_da: 0.0
+    CY_dr: 0.15
+    Cl_beta: -0.08
+    Cl_p: -0.50
+    Cl_r: 0.12
+    Cl_da: 0.25
+    Cl_dr: 0.005
+    Cn_beta: 0.06
+    Cn_p: -0.03
+    Cn_r: -0.08
+    Cn_da: -0.01         # adverse yaw
+    Cn_dr: -0.06
+    ground_effect: true  # induced-drag reduction near the ground (McCormick)
+
+  # Physical surfaces. mixer: conventional | elevon (flying wing) | vtail
+  mixer: conventional
+  actuators:
+    elevator: {max_deg: 25, rate_dps: 300, tau_s: 0.04}
+    aileron:  {max_deg: 25, rate_dps: 300, tau_s: 0.04}
+    rudder:   {max_deg: 30, rate_dps: 300, tau_s: 0.04}
+    flap:     {min_deg: 0, max_deg: 40, rate_dps: 60, tau_s: 0.08}
+
+environment:
+  wind_ned_mps: [-3.0, 1.0, 0.0]   # steady wind the air moves TOWARDS (NED)
+  turbulence: light                # none | light | moderate | severe (Dryden)
+  ground_elevation_m: 0.0          # runway altitude above mean sea level
+  seed: 7
+
+runway:
+  center_ne_m: [0.0, 0.0]
+  heading_deg: 60.0       # direction of the runway axis (either end may be used)
+  length_m: 300.0
+  width_m: 20.0
+
+initial_state:            # roughly what the glider looks like after rocket separation
+  position_ned_m: [-900.0, 700.0, -450.0]   # z negative = above ground
+  euler_deg: [10.0, -25.0, 200.0]           # roll, pitch, yaw
+  velocity_body_mps: [14.0, 0.5, 2.0]
+  rates_dps: [40.0, -20.0, 15.0]            # tumbling after deploy
+
+sensors:                  # navigation estimate fed to guidance (IMU/GNSS/baro/pitot)
+  position_sigma_m: 1.5
+  position_bias_walk_m: 0.05     # random-walk per sqrt(s)
+  altitude_sigma_m: 0.4
+  attitude_sigma_deg: 0.5
+  attitude_bias_deg: 0.5
+  rate_sigma_dps: 0.5
+  airspeed_sigma_mps: 0.3
+  velocity_sigma_mps: 0.2
+
+camera:
+  enabled: true
+  # projection: fisheye (single bulge lens) | equirect (stitched 360 output)
+  projection: fisheye
+  model: equidistant        # equidistant | equisolid | kannala_brandt
+  kb_coeffs: [0.0, 0.0, 0.0, 0.0]   # cv2.fisheye k1..k4 if model=kannala_brandt
+  fov_deg: 200.0
+  width_px: 768
+  height_px: 768
+  rate_hz: 5.0
+  # Mount rotation relative to body. All zero = looking forward.
+  # pitch -90 = belly camera looking straight down, image top = nose.
+  mount_rpy_deg: [0.0, -90.0, 0.0]
+  mount_offset_body_m: [0.0, 0.0, 0.05]
+  noise_sigma: 3.0          # pixel noise (0-255)
+  visibility_m: 12000       # haze distance scale
+
+perception:
+  mode: vision              # vision (render + detect) | oracle (truth + noise, fast)
+  oracle_pos_sigma_m: 3.0
+  oracle_heading_sigma_deg: 2.0
+
+guidance:
+  airspeed_mps: 12.0        # commanded airspeed (above best-glide, below Vne)
+  max_bank_deg: 35.0
+  orbit_radius_m: 60.0
+  orbit_direction: right    # right | left hand pattern
+  final_length_m: 200.0     # straight final before the aim point
+  aim_point_m: 40.0         # aim point distance past the threshold
+  flare_height_m: 3.0       # minimum flare height...
+  flare_tau_s: 1.5          # ...or sink_rate * tau, whichever is higher
+  touchdown_sink_mps: 0.3
+  search_radius_m: 80.0
+  search_toward_ne: null    # optional prior [north, east] of the landing site to fly toward
+
+sim:
+  dt_s: 0.005               # physics step (RK4)
+  control_rate_hz: 50.0
+  max_time_s: 600.0
